@@ -19,18 +19,20 @@
 - Add historical run comparison export (`csv/json`) from Streamlit.
 - Add quick links from Streamlit to open artifacts in browser/file explorer.
 
-
 TODO BEFORE PUBLISH
 
 Recommended local validation pass before publish:
 
 .\.venv\Scripts\python -m pytest sktime_quant/tests -o addopts=""
-config_dry_run.yaml --dry-run --print-summary
-streamlit_app.py
+.\.venv\Scripts\python -m sktime_quant.run --config config_dry_run.yaml --dry-run --print-summary
+.\.venv\Scripts\python -m streamlit run sktime_quant/ui/streamlit_app.py
+
 Optional docs build:
 make -C docs/source html SPHINXOPTS="-W --keep-going"
-When you’re satisfied, publish with:
+
+When you're satisfied, publish with:
 
 git push origin main
-git push origin sktime-quant-v0.1.0-initial
+git push origin sktime-quant-v0.2.0
+
 Next versions can definitely add substantial value. Your base is strong now: governance, CI, dry-run ops, and artifact-level observability are already in place.
