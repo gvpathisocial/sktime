@@ -1,0 +1,19 @@
+run_id: scheduled_dry_run
+data:
+  source_type: csv
+  csv_path: examples/quant/data/sample_market.csv
+backtest:
+  window_length: 10
+  step_length: 2
+  horizon: 1
+  strategy_policy: sign
+  objective: composite
+model:
+  candidates:
+    - naive_last
+    - naive_mean
+execution:
+  output_dir: results
+  portfolio_value: 1000000.0
+  no_trade_band: 0.001
+  min_order_notional: 100.0

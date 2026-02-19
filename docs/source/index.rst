@@ -49,6 +49,7 @@ Contents
    developers
    about
    examples
+   quant/index
 
 .. grid:: 1 2 2 2
     :gutter: 3

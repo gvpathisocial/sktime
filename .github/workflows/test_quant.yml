@@ -1,0 +1,189 @@
+name: test-quant
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "sktime_quant/**"
+      - "docs/source/quant/**"
+      - "examples/quant/**"
+      - ".github/workflows/test_quant.yml"
+      - "pyproject.toml"
+  push:
+    branches: [main]
+    paths:
+      - "sktime_quant/**"
+      - "docs/source/quant/**"
+      - "examples/quant/**"
+      - ".github/workflows/test_quant.yml"
+      - "pyproject.toml"
+
+jobs:
+  quant-unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: install dependencies
+        run: uv pip install .[dev,forecasting,quant]
+
+      - name: run sktime_quant tests (without timescale integration)
+        run: python -m pytest sktime_quant/tests -o addopts="" -m "not integration"
+
+  quant-timescale-integration:
+    runs-on: ubuntu-latest
+    services:
+      timescaledb:
+        image: timescale/timescaledb:latest-pg16
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: install dependencies
+        run: uv pip install .[dev,forecasting,quant]
+
+      - name: run timescale integration test
+        env:
+          RUN_TIMESCALE_TESTS: "1"
+          TIMESCALE_TEST_URI: "postgresql+psycopg://postgres:postgres@localhost:5432/postgres"
+        run: python -m pytest sktime_quant/tests/test_timescale_integration.py -o addopts=""
+
+  quant-cli-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: install dependencies
+        run: uv pip install .[dev,forecasting,quant]
+
+      - name: run CLI smoke test
+        run: |
+          python - <<'PY'
+          import pandas as pd
+          from pathlib import Path
+          import yaml
+          import subprocess
+          import sys
+
+          base = Path("tmp_quant_cli")
+          base.mkdir(exist_ok=True)
+          market = pd.DataFrame({
+              "timestamp": list(pd.date_range("2023-01-01", periods=160, freq="D")) * 2,
+              "asset": ["A"] * 160 + ["B"] * 160,
+              "close": [100 + i * 0.1 for i in range(160)] + [200 + i * 0.05 for i in range(160)],
+          })
+          csv_path = base / "market.csv"
+          market.to_csv(csv_path, index=False)
+
+          cfg = {
+              "run_id": "ci_cli",
+              "data": {"source_type": "csv", "csv_path": str(csv_path)},
+              "backtest": {"window_length": 60, "step_length": 10, "horizon": 1},
+              "execution": {"output_dir": str(base / "results")},
+          }
+          cfg_path = base / "config.yaml"
+          cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+          proc = subprocess.run(
+              [sys.executable, "-m", "sktime_quant.run", "--config", str(cfg_path)],
+              check=False,
+              capture_output=True,
+              text=True,
+          )
+          print(proc.stdout)
+          print(proc.stderr)
+          raise SystemExit(proc.returncode)
+          PY
+
+  quant-example-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: install dependencies
+        run: uv pip install .[dev,forecasting,quant]
+
+      - name: run example smoke
+        run: python examples/quant/01_quickstart_csv.py
+
+  quant-docs-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: install dependencies
+        run: uv pip install .[docs,forecasting,quant]
+
+      - name: build docs
+        run: |
+          make -C docs/source html SPHINXOPTS="-W --keep-going"
+
+  quant-docs-linkcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: install dependencies
+        run: uv pip install .[docs,forecasting,quant]
+
+      - name: run linkcheck for quant docs
+        run: |
+          sphinx-build -b linkcheck \
+            -D master_doc=quant/index \
+            -D linkcheck_timeout=15 \
+            -D linkcheck_retries=2 \
+            -D linkcheck_workers=5 \
+            docs/source docs/build/linkcheck

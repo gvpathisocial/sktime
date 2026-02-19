@@ -280,6 +280,13 @@ mlflow = [
 mlflow2 = [
   "mlflow<3.0",
 ]
+quant = [
+  "pydantic>=2.0",
+  "pyyaml>=6.0",
+  "sqlalchemy>=2.0",
+  "psycopg[binary]>=3.1",
+  "streamlit>=1.35",
+]
 mlflow_tests = [
   "boto3",
   "botocore",

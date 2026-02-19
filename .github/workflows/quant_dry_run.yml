@@ -1,0 +1,40 @@
+name: quant-daily-dry-run
+
+on:
+  schedule:
+    - cron: "30 5 * * *"
+  workflow_dispatch:
+
+jobs:
+  dry-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: install dependencies
+        run: uv pip install .[dev,forecasting,quant]
+
+      - name: run daily dry-run via CLI
+        run: |
+          python -m sktime_quant.run \
+            --config examples/quant/config_dry_run.yaml \
+            --dry-run \
+            --print-summary
+
+      - name: upload dry-run artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: quant-dry-run-artifacts
+          path: |
+            results/dry_run/reports/**
+            results/dry_run/orders/**
+            results/dry_run/governance/**
+            results/dry_run/state/**
+          if-no-files-found: warn

@@ -14,6 +14,7 @@ Documentation
    glossary
    changelog
    related_software
+   quant/index
 
 .. grid:: 1 2 2 2
     :gutter: 3
@@ -125,6 +126,24 @@ Documentation
             :expand:
 
             Change Logs
+
+    .. grid-item-card::
+        :text-align: center
+
+        Quant Extension
+
+        ^^^
+
+        sktime_quant architecture, config, runbook and examples.
+
+        +++
+
+        .. button-ref:: quant_docs
+            :color: primary
+            :click-parent:
+            :expand:
+
+            Quant Docs
 
     .. grid-item-card::
         :text-align: center
