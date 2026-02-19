@@ -151,3 +151,31 @@ def test_model_governance_history_persists_across_runs(tmp_path):
     assert r1.model_governance_path.endswith(".json")
     assert r2.model_governance_path.endswith(".json")
 
+
+def test_orchestrator_auto_selects_candidates_when_config_empty(tmp_path):
+    n = 120
+    df = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2023-01-01", periods=n, freq="D"),
+            "asset": ["A"] * n,
+            "close": [100 + i * 0.05 for i in range(n)],
+        }
+    )
+    csv_path = tmp_path / "market_auto.csv"
+    df.to_csv(csv_path, index=False)
+
+    cfg = AppConfig()
+    cfg.run_id = "auto_candidates_run"
+    cfg.data.source_type = "csv"
+    cfg.data.csv_path = str(csv_path)
+    cfg.backtest.window_length = 40
+    cfg.backtest.step_length = 10
+    cfg.backtest.horizon = 1
+    cfg.model.candidates = []
+    cfg.execution.output_dir = str(tmp_path / "results")
+
+    result = Orchestrator().run(cfg)
+    assert result.run_status == "completed"
+    summary = json.loads((tmp_path / "results" / "reports" / "auto_candidates_run_summary.json").read_text(encoding="utf-8"))
+    assert len(summary.get("candidate_models", [])) > 0
+

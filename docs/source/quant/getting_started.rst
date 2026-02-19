@@ -29,3 +29,11 @@ Minimal config:
      candidates: [naive_last, naive_mean, theta]
    execution:
      output_dir: ./results
+
+Model notes:
+
+* Registry includes: ``naive_last``, ``naive_mean``, ``theta``, ``arima``,
+  ``autoets``, ``exp_smoothing``, ``croston``, ``prophet``.
+* Final selectable models in UI/CLI are filtered by installed optional dependencies.
+* ``tbats`` is intentionally deferred in this build due environment stability
+  constraints on Python 3.13 (``numpy<2`` requirement).

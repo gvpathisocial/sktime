@@ -17,6 +17,10 @@ from sktime_quant.data.provider import DataProvider
 from sktime_quant.execution.orders import ORDER_COLUMNS, OrderExporter
 from sktime_quant.features.lagged_regressors import build_lagged_regressors
 from sktime_quant.forecast.engine import ForecastEngine, ForecastResult
+from sktime_quant.models.registry import (
+    get_available_model_names,
+    get_excluded_from_daily_update,
+)
 from sktime_quant.portfolio.optimizer import AllocationResult, PortfolioEngine
 
 
@@ -55,6 +59,7 @@ class Orchestrator:
             "model_selection": base / "reports" / f"{run}_model_selection.json",
             "model_governance": base / "reports" / f"{run}_model_governance.json",
             "state": base / "state" / f"{run}_last_timestamp.txt",
+            "model_state_dir": base / "state" / "models",
             "governance_history": base / "governance" / "model_stability_history.json",
         }
         for path in paths.values():
@@ -351,10 +356,14 @@ class Orchestrator:
         self._write_incremental_state(cfg, paths, market)
 
         _ = build_lagged_regressors(market)
+        candidate_models = cfg.model.candidates or get_available_model_names()
+        if not candidate_models:
+            candidate_models = ["naive_last"]
+        excluded_daily_update = get_excluded_from_daily_update(candidate_models)
 
         backtest = self.backtest_engine.run(
             market=market,
-            model_names=cfg.model.candidates,
+            model_names=candidate_models,
             backtest_config=cfg.backtest,
         )
         paths["model_selection"].write_text(
@@ -369,13 +378,15 @@ class Orchestrator:
         model_by_asset = backtest.best_models
         if not model_by_asset:
             # fallback when backtest has insufficient data
-            model_by_asset = {a: cfg.model.candidates[0] for a in sorted(market["asset"].unique())}
+            model_by_asset = {a: candidate_models[0] for a in sorted(market["asset"].unique())}
 
         forecast = self.forecast_engine.forecast_assets(
             market=market,
             model_by_asset=model_by_asset,
             horizon=cfg.backtest.horizon,
             target_confidence=cfg.risk.target_confidence,
+            update_mode=cfg.model.update_mode,
+            state_dir=paths["model_state_dir"],
         )
 
         allocation = self.portfolio_engine.rebalance(
@@ -414,12 +425,18 @@ class Orchestrator:
             "run_id": cfg.run_id,
             "assets": sorted(market["asset"].astype(str).unique().tolist()),
             "best_models": model_by_asset,
+            "candidate_models": candidate_models,
             "orders_path": orders_path,
             "data_quality_path": str(paths["data_quality"]),
             "model_selection_path": str(paths["model_selection"]),
             "timestamp_utc": datetime.now(UTC).isoformat(),
             "allocation_diagnostics": allocation.diagnostics,
             "execution_diagnostics": order_diagnostics,
+            "forecast_update_mode": cfg.model.update_mode,
+            "forecast_update_status_counts": forecast.predictions.get(
+                "update_status", pd.Series(dtype=str)
+            ).value_counts().to_dict(),
+            "daily_update_excluded_models": excluded_daily_update,
             "model_governance_path": str(paths["model_governance"]),
             "governance_alert_count": int(model_governance["alert_count"]),
             "run_status": "completed",

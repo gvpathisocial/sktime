@@ -12,6 +12,13 @@ import streamlit as st
 from sktime_quant.config.loader import load_config
 from sktime_quant.config.profiles import save_profile
 from sktime_quant.config.schema import AppConfig
+from sktime_quant.models.registry import (
+    get_available_model_names,
+    get_excluded_from_daily_update,
+    get_model_health,
+    get_model_overview_rows,
+)
+from sktime_quant.models.health import summarize_runtime_health
 from sktime_quant.pipelines.orchestrator import Orchestrator
 from sktime_quant.ui.artifact_diff import (
     build_governance_alert_diff,
@@ -78,6 +85,19 @@ if page == "Data":
 
 if page == "Backtest":
     st.subheader("Backtest settings")
+    configured_models = list(cfg.model.candidates)
+    configured_health = get_model_health(configured_models)
+    unavailable_configured = [r for r in configured_health if not bool(r["available"])]
+    if unavailable_configured:
+        st.warning(
+            "Configured models with dependency/validation issues: "
+            + ", ".join(str(r["model"]) for r in unavailable_configured)
+        )
+
+    available_models = get_available_model_names()
+    default_models = [m for m in cfg.model.candidates if m in available_models]
+    if not default_models:
+        default_models = [m for m in ["naive_last", "theta"] if m in available_models]
     cfg.backtest.splitter_type = st.selectbox("Splitter", ["expanding", "sliding"], index=0)
     cfg.backtest.window_length = st.number_input("Window length", value=cfg.backtest.window_length, min_value=10)
     cfg.backtest.step_length = st.number_input("Step length", value=cfg.backtest.step_length, min_value=1)
@@ -95,11 +115,54 @@ if page == "Backtest":
         ["composite", "sharpe", "sortino", "calmar"],
         index=["composite", "sharpe", "sortino", "calmar"].index(cfg.backtest.objective),
     )
+    cfg.model.update_mode = st.selectbox(
+        "Forecast update mode",
+        ["update", "refit"],
+        index=["update", "refit"].index(cfg.model.update_mode),
+        help="update: use delta updates where supported; refit otherwise",
+    )
     cfg.model.candidates = st.multiselect(
         "Candidate models",
-        ["naive_last", "naive_mean", "theta", "arima"],
-        default=cfg.model.candidates,
+        available_models,
+        default=default_models,
     )
+    if cfg.model.update_mode == "update":
+        excluded_update = get_excluded_from_daily_update(cfg.model.candidates)
+        if excluded_update:
+            st.warning("Some selected models are excluded from daily update and will refit.")
+            st.dataframe(pd.DataFrame(excluded_update), use_container_width=True)
+    candidate_health = get_model_health(cfg.model.candidates)
+    healthy_count = sum(
+        1
+        for r in candidate_health
+        if bool(r["available"]) and bool(r["params_ok"])
+    )
+    if candidate_health and healthy_count == len(candidate_health):
+        st.success(
+            f"Model availability health: healthy ({healthy_count}/{len(candidate_health)} ready)"
+        )
+    else:
+        st.error(
+            f"Model availability health: degraded ({healthy_count}/{len(candidate_health)} ready)"
+        )
+    st.dataframe(pd.DataFrame(candidate_health), use_container_width=True)
+    st.caption("Model overview for selected candidates")
+    selected_overview = get_model_overview_rows(cfg.model.candidates)
+    if selected_overview:
+        st.dataframe(pd.DataFrame(selected_overview), use_container_width=True)
+        with st.expander("Selected model notes", expanded=False):
+            for row in selected_overview:
+                st.markdown(
+                    f"**{row['model']}** ({row['family']}): {row['summary']} "
+                    f"Best for: {row['best_for']} Notes: {row['notes']}"
+                )
+    else:
+        st.info("Select at least one model to view overview details.")
+
+    with st.expander("All available model overviews", expanded=False):
+        all_overview = get_model_overview_rows(available_models)
+        if all_overview:
+            st.dataframe(pd.DataFrame(all_overview), use_container_width=True)
 
 if page == "Forecast":
     st.subheader("Forecast and confidence")
@@ -188,6 +251,26 @@ if result is not None:
 
     if page == "Backtest":
         st.dataframe(result.backtest.metrics)
+        runtime_health = summarize_runtime_health(
+            result.backtest.metrics,
+            max_failure_rate=cfg.backtest.max_failure_rate,
+            confidence_floor=cfg.backtest.confidence_floor,
+        )
+        st.subheader("Runtime Model Health")
+        if runtime_health.empty:
+            st.info("No runtime model health available yet.")
+        else:
+            healthy_runtime = int((runtime_health["runtime_health"] == "healthy").sum())
+            total_runtime = int(len(runtime_health))
+            if healthy_runtime == total_runtime:
+                st.success(
+                    f"Runtime health: healthy ({healthy_runtime}/{total_runtime} models)"
+                )
+            else:
+                st.warning(
+                    f"Runtime health: degraded ({healthy_runtime}/{total_runtime} models healthy)"
+                )
+            st.dataframe(runtime_health, use_container_width=True)
         best = (
             result.backtest.metrics.sort_values("risk_adjusted_score", ascending=False)
             .groupby("asset", as_index=False)
