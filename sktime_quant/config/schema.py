@@ -70,6 +70,39 @@ class PortfolioConfig:
 
 
 @dataclass(slots=True)
+class StrategyConfig:
+    mode: str = "forecast_only"
+    rule_chain: str = "any"
+    rules_path: str | None = None
+    rules: list[dict[str, Any]] = field(
+        default_factory=lambda: [
+            {
+                "name": "rsi_buy",
+                "feature": "rsi_14",
+                "operator": "<=",
+                "value": 35.0,
+                "signal": 1,
+            },
+            {
+                "name": "rsi_sell",
+                "feature": "rsi_14",
+                "operator": ">=",
+                "value": 65.0,
+                "signal": -1,
+            },
+        ]
+    )
+    classifier_type: str = "random_forest"
+    classifier_min_train_samples: int = 30
+    classifier_probability_threshold: float = 0.55
+    blend_policy: str = "weighted_vote"
+    blend_forecast_weight: float = 0.34
+    blend_rule_weight: float = 0.33
+    blend_classifier_weight: float = 0.33
+    blend_vote_threshold: float = 0.1
+
+
+@dataclass(slots=True)
 class ExecutionConfig:
     output_dir: str = "results"
     orders_subdir: str = "orders"
@@ -98,6 +131,7 @@ class AppConfig:
     model: ModelConfig = field(default_factory=ModelConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     portfolio: PortfolioConfig = field(default_factory=PortfolioConfig)
+    strategy: StrategyConfig = field(default_factory=StrategyConfig)
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
     run_id: str = "default_run"
 
@@ -109,6 +143,7 @@ class AppConfig:
             model=ModelConfig(**payload.get("model", {})),
             risk=RiskConfig(**payload.get("risk", {})),
             portfolio=PortfolioConfig(**payload.get("portfolio", {})),
+            strategy=StrategyConfig(**payload.get("strategy", {})),
             execution=ExecutionConfig(**payload.get("execution", {})),
             run_id=payload.get("run_id", "default_run"),
         )

@@ -123,3 +123,22 @@ The tests have been **refactored from pure unit tests to integration tests** mat
 - `results/reports/integration_batch_1.log`
 - `results/reports/integration_batch_2.log`
 
+## Strategy Engine + Blended Studio Validation (2026-02-20)
+
+### Scope
+- Rule DSL + YAML persistence
+- Classifier signal generation
+- Blend policy (`and` / `or` / `weighted_vote`)
+- Walk-forward strategy mode integration
+- Orchestrator strategy artifacts in summary/report outputs
+
+### Commands
+- `.\.venv\Scripts\python.exe -m pytest sktime_quant/tests/test_strategy_engine.py sktime_quant/tests/test_walkforward.py sktime_quant/tests/test_orchestrator_integration.py sktime_quant/tests/test_cli_runner.py -o addopts="" -q`
+- `.\.venv\Scripts\python.exe -m pytest sktime_quant/tests -o addopts="" -m "not integration" -q`
+- `RUN_TIMESCALE_CONTAINER_TESTS=1 .\.venv\Scripts\python.exe -m pytest sktime_quant/tests/test_timescale_container_integration.py -o addopts="" -q`
+
+### Results
+- Targeted strategy/backtest/orchestrator/cli set: `15 passed`
+- Full non-integration quant set: `64 passed, 2 deselected`
+- Timescale container integration smoke: `1 passed`
+

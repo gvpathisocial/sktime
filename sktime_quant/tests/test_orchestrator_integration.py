@@ -47,6 +47,9 @@ def test_orchestrator_end_to_end_csv(tmp_path):
     assert "dropped_reason_counts" in summary["execution_diagnostics"]
     assert "report_path" in summary
     assert Path(summary["report_path"]).exists()
+    assert "strategy_mode" in summary
+    assert "strategy_config_path" in summary
+    assert "strategy_rules_path" in summary
     governance = json.loads((tmp_path / "results" / "reports" / "it_run_model_governance.json").read_text(encoding="utf-8"))
     assert "alerts" in governance
 

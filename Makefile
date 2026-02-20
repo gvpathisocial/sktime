@@ -8,7 +8,7 @@ DOC_DIR=./docs
 BUILD_TOOLS=./build_tools
 TEST_DIR=testdir
 
-.PHONY: help release install test lint clean dist doc docs test_quant test_quant_core test_quant_timescale_container
+.PHONY: help release install test lint clean dist doc docs test_quant test_quant_core test_quant_strategy test_quant_timescale_container
 
 .DEFAULT_GOAL := help
 
@@ -84,6 +84,11 @@ test_quant_core: ## Run core quant strategy/performance tests (walkforward + ris
 		sktime_quant/tests/test_walkforward.py \
 		sktime_quant/tests/test_risk_metrics.py \
 		sktime_quant/tests/test_forecast_engine_update.py \
+		-o addopts=""
+
+test_quant_strategy: ## Run blended strategy engine tests (rule DSL + classifier + blending)
+	python -m pytest \
+		sktime_quant/tests/test_strategy_engine.py \
 		-o addopts=""
 
 test_quant_timescale_container: ## Run TimescaleDB container integration test (requires Docker)

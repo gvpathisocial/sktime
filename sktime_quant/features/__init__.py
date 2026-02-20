@@ -6,6 +6,7 @@ from sktime_quant.features.exogenous import (
     lag_exogenous_one_step,
 )
 from sktime_quant.features.lagged_regressors import build_lagged_regressors
+from sktime_quant.features.technical_indicators import build_technical_indicators
 from sktime_quant.features.zone_labels import build_zone_labels
 
 __all__ = [
@@ -14,5 +15,6 @@ __all__ = [
     "drop_exogenous_null_rows",
     "encode_categorical_exogenous",
     "build_zone_labels",
+    "build_technical_indicators",
 ]
 

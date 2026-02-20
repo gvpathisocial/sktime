@@ -13,8 +13,12 @@ from sktime.performance_metrics.forecasting import MeanAbsoluteError
 from sktime.split import ExpandingWindowSplitter, SlidingWindowSplitter
 
 from sktime_quant.config.schema import BacktestConfig
+from sktime_quant.features.technical_indicators import build_technical_indicators
 from sktime_quant.models.registry import make_forecaster
 from sktime_quant.risk.metrics import max_drawdown
+from sktime_quant.strategy.blender import blend_signals
+from sktime_quant.strategy.classifier import predict_classifier_signal_at
+from sktime_quant.strategy.rule_dsl import evaluate_rules_signal, load_rules_yaml
 
 
 @dataclass(slots=True)
@@ -59,6 +63,50 @@ class WalkForwardEngine:
         y = df.set_index("timestamp")["close"].astype(float)
         y.index = pd.DatetimeIndex(y.index)
         return y
+
+    def _build_strategy_features_for_asset(self, market_asset: pd.DataFrame) -> pd.DataFrame:
+        frame = market_asset.copy()
+        frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True, errors="coerce")
+        frame = frame.dropna(subset=["timestamp"]).sort_values("timestamp")
+        frame["close"] = pd.to_numeric(frame["close"], errors="coerce")
+        tech = build_technical_indicators(frame)
+        tech = tech.sort_values("timestamp").set_index("timestamp")
+        close = frame.set_index("timestamp")["close"].astype(float)
+        trend = close.rolling(10, min_periods=5).mean()
+        residual = close - trend
+        residual_std = residual.rolling(20, min_periods=10).std(ddof=0)
+        internals = pd.DataFrame(
+            {
+                "trend_10": trend,
+                "residual": residual,
+                "residual_z": residual / (residual_std.replace(0.0, np.nan)),
+                "return_1d": close.pct_change(),
+                "close": close,
+            }
+        )
+        out = tech.join(internals, how="left")
+        num_cols = [c for c in out.columns if c != "asset"]
+        out[num_cols] = out[num_cols].apply(pd.to_numeric, errors="coerce")
+        return out.drop(columns=["asset"], errors="ignore").sort_index()
+
+    def _feature_row_at_cutoff(
+        self, feature_frame: pd.DataFrame | None, cutoff: pd.Timestamp
+    ) -> dict[str, float] | None:
+        if feature_frame is None or feature_frame.empty:
+            return None
+        if not isinstance(feature_frame.index, pd.DatetimeIndex):
+            return None
+        cutoff = pd.Timestamp(cutoff)
+        if cutoff in feature_frame.index:
+            row = feature_frame.loc[cutoff]
+            if isinstance(row, pd.DataFrame):
+                row = row.iloc[-1]
+            return {str(k): float(v) for k, v in row.dropna().to_dict().items()}
+        hist = feature_frame[feature_frame.index <= cutoff]
+        if hist.empty:
+            return None
+        row = hist.iloc[-1]
+        return {str(k): float(v) for k, v in row.dropna().to_dict().items()}
 
     def _first_scalar(self, value) -> float:
         if isinstance(value, pd.DataFrame):
@@ -192,6 +240,7 @@ class WalkForwardEngine:
         market: pd.DataFrame,
         model_names: list[str],
         backtest_config: BacktestConfig,
+        strategy_config=None,
         exog: pd.DataFrame | None = None,
         holiday_by_asset: dict[str, pd.DataFrame] | None = None,
         progress_hook=None,
@@ -200,10 +249,38 @@ class WalkForwardEngine:
         metrics_rows: list[dict[str, float | str | bool]] = []
         fold_rows: list[pd.DataFrame] = []
         assets_list = sorted(market["asset"].astype(str).unique().tolist())
+        strategy_mode = str(getattr(strategy_config, "mode", "forecast_only"))
+        strategy_rules = list(getattr(strategy_config, "rules", []) or [])
+        strategy_rules_path = getattr(strategy_config, "rules_path", None)
+        if strategy_rules_path:
+            try:
+                strategy_rules = load_rules_yaml(strategy_rules_path)
+            except Exception:
+                pass
+        rule_chain = str(getattr(strategy_config, "rule_chain", "any"))
+        classifier_type = str(getattr(strategy_config, "classifier_type", "random_forest"))
+        classifier_min_train = int(
+            max(5, int(getattr(strategy_config, "classifier_min_train_samples", 30)))
+        )
+        classifier_prob_threshold = float(
+            getattr(strategy_config, "classifier_probability_threshold", 0.55)
+        )
+        blend_policy = str(getattr(strategy_config, "blend_policy", "weighted_vote"))
+        blend_forecast_weight = float(getattr(strategy_config, "blend_forecast_weight", 0.34))
+        blend_rule_weight = float(getattr(strategy_config, "blend_rule_weight", 0.33))
+        blend_classifier_weight = float(getattr(strategy_config, "blend_classifier_weight", 0.33))
+        blend_vote_threshold = float(getattr(strategy_config, "blend_vote_threshold", 0.1))
         total_tasks = len(assets_list) * max(1, len(model_names))
         task_idx = 0
 
         for asset in assets_list:
+            market_asset = market[market["asset"].astype(str) == asset].sort_values("timestamp").copy()
+            strategy_feature_frame = self._build_strategy_features_for_asset(market_asset)
+            strategy_close = (
+                market_asset.assign(timestamp=pd.to_datetime(market_asset["timestamp"], utc=True))
+                .set_index("timestamp")["close"]
+                .astype(float)
+            )
             y = self._series_for_asset(market, asset)
             if len(y) <= backtest_config.window_length + backtest_config.horizon + 2:
                 continue
@@ -271,6 +348,9 @@ class WalkForwardEngine:
                             "excluded_reason": f"model_init_failed: {type(exc).__name__}",
                             "objective": backtest_config.objective,
                             "risk_adjusted_score": -np.inf,
+                            "strategy_mode": strategy_mode,
+                            "blend_policy": blend_policy,
+                            "classifier_type": classifier_type,
                         }
                     )
                     continue
@@ -339,6 +419,9 @@ class WalkForwardEngine:
                             "excluded_reason": "insufficient_successful_folds",
                             "objective": backtest_config.objective,
                             "risk_adjusted_score": -np.inf,
+                            "strategy_mode": strategy_mode,
+                            "blend_policy": blend_policy,
+                            "classifier_type": classifier_type,
                         }
                     )
                     continue
@@ -348,6 +431,11 @@ class WalkForwardEngine:
                 lowers: list[float] = []
                 uppers: list[float] = []
                 signals: list[int] = []
+                signals_forecast: list[int] = []
+                signals_rule: list[int] = []
+                signals_classifier: list[int] = []
+                signals_blended: list[int] = []
+                classifier_confidence_vals: list[float] = []
                 interval_sources: list[str] = []
 
                 for _, row in result.iterrows():
@@ -372,8 +460,42 @@ class WalkForwardEngine:
                         upper=upper,
                         cfg=backtest_config,
                     )
+                    cutoff = pd.to_datetime(row["cutoff"], errors="coerce", utc=True)
+                    feature_row = self._feature_row_at_cutoff(strategy_feature_frame, cutoff)
+                    rule_signal = evaluate_rules_signal(
+                        feature_row,
+                        strategy_rules,
+                        chain=rule_chain,
+                        default_signal=0,
+                    )
+                    classifier_signal, cls_conf = predict_classifier_signal_at(
+                        feature_frame=strategy_feature_frame,
+                        close_series=strategy_close,
+                        cutoff=cutoff,
+                        classifier_type=classifier_type,
+                        min_train_samples=classifier_min_train,
+                        probability_threshold=classifier_prob_threshold,
+                    )
+                    blended_signal = blend_signals(
+                        forecast_signal=signal,
+                        rule_signal=rule_signal,
+                        classifier_signal=classifier_signal,
+                        policy=blend_policy,
+                        forecast_weight=blend_forecast_weight,
+                        rule_weight=blend_rule_weight,
+                        classifier_weight=blend_classifier_weight,
+                        vote_threshold=blend_vote_threshold,
+                    )
+                    if strategy_mode == "rule_only":
+                        selected_signal = rule_signal
+                    elif strategy_mode == "classifier_only":
+                        selected_signal = classifier_signal
+                    elif strategy_mode == "blended":
+                        selected_signal = blended_signal
+                    else:
+                        selected_signal = signal
                     trade_ret = self._compute_trade_return(
-                        signal=signal,
+                        signal=selected_signal,
                         base=base,
                         true=true,
                         transaction_cost_bps=backtest_config.transaction_cost_bps,
@@ -384,7 +506,12 @@ class WalkForwardEngine:
                     coverage_hits.append(float(lower <= true <= upper))
                     lowers.append(lower)
                     uppers.append(upper)
-                    signals.append(signal)
+                    signals.append(selected_signal)
+                    signals_forecast.append(signal)
+                    signals_rule.append(rule_signal)
+                    signals_classifier.append(classifier_signal)
+                    signals_blended.append(blended_signal)
+                    classifier_confidence_vals.append(cls_conf)
                     interval_sources.append(interval_source)
 
                 result["fold_return"] = fold_returns
@@ -392,6 +519,11 @@ class WalkForwardEngine:
                 result["pred_lower"] = lowers
                 result["pred_upper"] = uppers
                 result["signal"] = signals
+                result["signal_forecast"] = signals_forecast
+                result["signal_rule"] = signals_rule
+                result["signal_classifier"] = signals_classifier
+                result["signal_blended"] = signals_blended
+                result["classifier_confidence"] = classifier_confidence_vals
                 result["interval_source"] = interval_sources
 
                 returns = result["fold_return"].fillna(0.0)
@@ -435,6 +567,9 @@ class WalkForwardEngine:
                         "excluded_reason": exclusion_reason,
                         "objective": backtest_config.objective,
                         "risk_adjusted_score": score if not excluded else -np.inf,
+                        "strategy_mode": strategy_mode,
+                        "blend_policy": blend_policy,
+                        "classifier_type": classifier_type,
                     }
                 )
 
@@ -447,6 +582,11 @@ class WalkForwardEngine:
                         "pred_lower",
                         "pred_upper",
                         "signal",
+                        "signal_forecast",
+                        "signal_rule",
+                        "signal_classifier",
+                        "signal_blended",
+                        "classifier_confidence",
                         "interval_source",
                     ]
                 ].copy()

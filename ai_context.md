@@ -276,3 +276,47 @@ Build a separate `sktime_quant/` extension that uses `sktime` for:
    - classifier engine (tree/RF) over indicators + internals
    - blended execution path wiring rule engine and classifier outputs
 5. Prepare release notes + semantic milestone tag for this uplift implementation.
+
+## 21) Pending Item 4 Implemented (2026-02-20)
+- Implemented complete next-level strategy scope:
+  - rule DSL with validation and YAML persistence:
+    - `sktime_quant/strategy/rule_dsl.py`
+  - classifier-based signal engine (decision tree / random forest):
+    - `sktime_quant/strategy/classifier.py`
+  - blend policy engine (`and`, `or`, `weighted_vote`):
+    - `sktime_quant/strategy/blender.py`
+  - strategy package exports:
+    - `sktime_quant/strategy/__init__.py`
+- Config surface extended:
+  - added `StrategyConfig` to `AppConfig` with mode/rules/classifier/blend parameters
+  - file: `sktime_quant/config/schema.py`
+- Walk-forward integration:
+  - `WalkForwardEngine.run(..., strategy_config=...)`
+  - supports modes: `forecast_only`, `rule_only`, `classifier_only`, `blended`
+  - per-fold columns persisted:
+    - `signal_forecast`, `signal_rule`, `signal_classifier`, `signal_blended`, `classifier_confidence`
+  - metrics now carry strategy metadata (`strategy_mode`, `blend_policy`, `classifier_type`)
+  - file: `sktime_quant/backtest/walkforward.py`
+- Orchestration/reporting integration:
+  - strategy config artifact: `*_strategy_config.json`
+  - strategy rules artifact: `*_strategy_rules.yaml`
+  - summary includes strategy fields/path references
+  - run report includes strategy metadata
+  - files:
+    - `sktime_quant/pipelines/orchestrator.py`
+    - `sktime_quant/reporting/run_report.py`
+- Studio UX integration:
+  - Run Studio includes Strategy controls
+  - new Rule Builder tab with YAML load/apply/save
+  - file: `sktime_quant/ui/streamlit_app_uplift.py`
+
+## 22) Validation Update (Post Item 4)
+- Targeted suite:
+  - `.\.venv\Scripts\python.exe -m pytest sktime_quant/tests/test_strategy_engine.py sktime_quant/tests/test_walkforward.py sktime_quant/tests/test_orchestrator_integration.py sktime_quant/tests/test_cli_runner.py -o addopts="" -q`
+  - result: `15 passed`
+- Full non-integration quant suite:
+  - `.\.venv\Scripts\python.exe -m pytest sktime_quant/tests -o addopts="" -m "not integration" -q`
+  - result: `64 passed, 2 deselected`
+- Timescale container integration smoke:
+  - `RUN_TIMESCALE_CONTAINER_TESTS=1 .\.venv\Scripts\python.exe -m pytest sktime_quant/tests/test_timescale_container_integration.py -o addopts="" -q`
+  - result: `1 passed`

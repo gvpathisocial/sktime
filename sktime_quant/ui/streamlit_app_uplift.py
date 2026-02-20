@@ -40,6 +40,7 @@ from sktime_quant.models.registry import (
     get_registered_model_names,
 )
 from sktime_quant.pipelines.studio_runtime import get_run, list_runs, start_background_run
+from sktime_quant.strategy.rule_dsl import load_rules_yaml, save_rules_yaml
 
 try:
     from sktime_quant.risk.metrics import (
@@ -666,6 +667,105 @@ def _render_risk_execution_inputs(cfg: AppConfig) -> None:
     )
 
 
+def _render_strategy_inputs(cfg: AppConfig) -> None:
+    modes = ["forecast_only", "rule_only", "classifier_only", "blended"]
+    cfg.strategy.mode = st.selectbox(
+        "Strategy mode",
+        modes,
+        index=modes.index(cfg.strategy.mode) if cfg.strategy.mode in modes else 0,
+    )
+    cfg.strategy.rule_chain = st.selectbox(
+        "Rule chain",
+        ["any", "all"],
+        index=["any", "all"].index(cfg.strategy.rule_chain)
+        if cfg.strategy.rule_chain in {"any", "all"}
+        else 0,
+    )
+    cfg.strategy.rules_path = (
+        st.text_input("Rules YAML path (optional)", cfg.strategy.rules_path or "") or None
+    )
+
+    c1, c2, c3 = st.columns(3)
+    cfg.strategy.classifier_type = c1.selectbox(
+        "Classifier type",
+        ["random_forest", "decision_tree"],
+        index=0 if cfg.strategy.classifier_type == "random_forest" else 1,
+    )
+    cfg.strategy.classifier_min_train_samples = int(
+        c2.number_input(
+            "Classifier min samples",
+            min_value=5,
+            value=int(cfg.strategy.classifier_min_train_samples),
+            step=5,
+        )
+    )
+    cfg.strategy.classifier_probability_threshold = float(
+        c3.slider(
+            "Classifier probability threshold",
+            0.5,
+            0.9,
+            float(cfg.strategy.classifier_probability_threshold),
+            0.01,
+        )
+    )
+
+    c4, c5, c6, c7 = st.columns(4)
+    cfg.strategy.blend_policy = c4.selectbox(
+        "Blend policy",
+        ["weighted_vote", "and", "or"],
+        index=["weighted_vote", "and", "or"].index(cfg.strategy.blend_policy)
+        if cfg.strategy.blend_policy in {"weighted_vote", "and", "or"}
+        else 0,
+    )
+    cfg.strategy.blend_forecast_weight = float(
+        c5.number_input("W forecast", min_value=0.0, value=float(cfg.strategy.blend_forecast_weight))
+    )
+    cfg.strategy.blend_rule_weight = float(
+        c6.number_input("W rule", min_value=0.0, value=float(cfg.strategy.blend_rule_weight))
+    )
+    cfg.strategy.blend_classifier_weight = float(
+        c7.number_input("W classifier", min_value=0.0, value=float(cfg.strategy.blend_classifier_weight))
+    )
+    cfg.strategy.blend_vote_threshold = float(
+        st.slider("Blend vote threshold", 0.0, 1.0, float(cfg.strategy.blend_vote_threshold), 0.01)
+    )
+
+
+def _render_rule_builder(cfg: AppConfig) -> None:
+    st.markdown("### Rule Builder")
+    st.caption("Design rule-chain logic in foreground studio and persist as YAML.")
+
+    if cfg.strategy.rules_path and st.button("Load rules from path"):
+        try:
+            cfg.strategy.rules = load_rules_yaml(cfg.strategy.rules_path)
+            st.success(f"Loaded rules from {cfg.strategy.rules_path}")
+        except Exception as exc:
+            st.error(f"Failed to load rules: {exc}")
+
+    raw = yaml.safe_dump({"rules": cfg.strategy.rules}, sort_keys=False, allow_unicode=False)
+    txt = st.text_area("Rules YAML", value=raw, height=340, key="uplift_rule_builder_yaml")
+    col1, col2 = st.columns(2)
+    if col1.button("Apply rules to current config"):
+        try:
+            payload = yaml.safe_load(txt) or {}
+            rules = payload.get("rules", [])
+            if not isinstance(rules, list):
+                raise ValueError("rules must be a list")
+            cfg.strategy.rules = rules
+            st.success(f"Applied {len(rules)} rules.")
+        except Exception as exc:
+            st.error(f"Invalid rule YAML: {exc}")
+    if col2.button("Save rules to path"):
+        if not cfg.strategy.rules_path:
+            st.warning("Set Strategy -> Rules YAML path first.")
+        else:
+            try:
+                save_rules_yaml(cfg.strategy.rules_path, cfg.strategy.rules)
+                st.success(f"Saved rules to {cfg.strategy.rules_path}")
+            except Exception as exc:
+                st.error(f"Failed to save rules: {exc}")
+
+
 def _queue_background_run(cfg: AppConfig) -> None:
     st.session_state.last_error = None
     st.session_state.progress_events = []
@@ -746,6 +846,7 @@ def _render_run_explorer(cfg: AppConfig) -> None:
     c3.metric("Governance Alerts", int(summary.get("governance_alert_count", 0)) if str(summary.get("governance_alert_count", "")).isdigit() else str(summary.get("governance_alert_count", 0)))
     best = summary.get("best_models", {})
     c4.metric("Best Models", len(best) if isinstance(best, dict) else 0)
+    st.caption(f"strategy_mode={summary.get('strategy_mode', 'forecast_only')}")
     if summary.get("report_path"):
         st.caption(f"Run report: `{summary.get('report_path')}`")
 
@@ -1128,13 +1229,24 @@ def main() -> None:
     st.title("sktime_quant Uplift UI")
     st.markdown(
         '<div class="sq-card"><b>Operator flow</b><br/>1) Configure in <b>Run Studio</b> '
-        '2) Start pipeline once 3) Review that run in <b>Run Explorer</b> '
-        '4) Analyze performance in <b>Performance Analytics</b> '
-        '5) Inspect trends in <b>Governance</b> 6) Export in <b>Orders</b>.</div>',
+        '2) Design rule logic in <b>Rule Builder</b> 3) Start pipeline once '
+        '4) Review that run in <b>Run Explorer</b> '
+        '5) Analyze performance in <b>Performance Analytics</b> '
+        '6) Inspect trends in <b>Governance</b> 7) Export in <b>Orders</b>.</div>',
         unsafe_allow_html=True,
     )
 
-    tabs = st.tabs(["Run Studio", "Run Explorer", "Performance Analytics", "Governance", "Orders", "Config Lab"])
+    tabs = st.tabs(
+        [
+            "Run Studio",
+            "Rule Builder",
+            "Run Explorer",
+            "Performance Analytics",
+            "Governance",
+            "Orders",
+            "Config Lab",
+        ]
+    )
 
     with tabs[0]:
         st.markdown("### Run Studio")
@@ -1143,6 +1255,8 @@ def main() -> None:
             _render_data_inputs(cfg)
         with st.expander("Modeling + Backtest", expanded=True):
             _render_model_inputs(cfg)
+        with st.expander("Strategy Studio", expanded=True):
+            _render_strategy_inputs(cfg)
         with st.expander("Risk + Execution", expanded=True):
             _render_risk_execution_inputs(cfg)
 
@@ -1166,18 +1280,21 @@ def main() -> None:
                 _show_df(pd.DataFrame(runs), height=220)
 
     with tabs[1]:
-        _render_run_explorer(cfg)
+        _render_rule_builder(cfg)
 
     with tabs[2]:
-        _render_performance_analytics(cfg)
+        _render_run_explorer(cfg)
 
     with tabs[3]:
-        _render_governance(cfg)
+        _render_performance_analytics(cfg)
 
     with tabs[4]:
-        _render_orders(cfg)
+        _render_governance(cfg)
 
     with tabs[5]:
+        _render_orders(cfg)
+
+    with tabs[6]:
         cfg = _render_config_lab(cfg)
         st.session_state.cfg = cfg
 
