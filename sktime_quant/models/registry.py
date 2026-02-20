@@ -57,10 +57,13 @@ def _make_ensemble_blend():
     )
 
 
-def _make_prophet():
+def _make_prophet(context: dict[str, object] | None = None):
     from sktime.forecasting.fbprophet import Prophet
 
-    return Prophet()
+    kwargs: dict[str, object] = {}
+    if context is not None and "holidays" in context and context["holidays"] is not None:
+        kwargs["holidays"] = context["holidays"]
+    return Prophet(**kwargs)
 
 
 _FACTORY: dict[str, Callable[[], object]] = {
@@ -307,10 +310,12 @@ def get_model_health(names: list[str] | None = None) -> list[dict[str, object]]:
     return rows
 
 
-def make_forecaster(name: str):
+def make_forecaster(name: str, context: dict[str, object] | None = None):
     if name not in _FACTORY:
         raise ValueError(f"Unknown forecaster: {name}")
     try:
+        if name == "prophet":
+            return _FACTORY[name](context)
         return _FACTORY[name]()
     except ModuleNotFoundError as exc:
         missing = exc.name or "an optional dependency/version constraint"

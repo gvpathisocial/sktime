@@ -22,6 +22,10 @@ class DataConfig:
     strict_schema_validation: bool = True
     db_max_retries: int = 3
     db_retry_backoff_seconds: float = 1.0
+    enable_db_holidays: bool = False
+    holiday_table: str = "public.holiday_calendar"
+    asset_market_map: dict[str, str] = field(default_factory=dict)
+    default_market: str | None = None
 
 
 @dataclass(slots=True)

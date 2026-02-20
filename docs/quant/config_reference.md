@@ -7,6 +7,7 @@
 - `start`, `end`, `universe`
 - `incremental_mode`, `incremental_state_path`
 - `strict_schema_validation`, `db_max_retries`, `db_retry_backoff_seconds`
+- holidays (Prophet): `enable_db_holidays`, `holiday_table`, `asset_market_map`, `default_market`
 
 ## Backtest
 - split and horizon: `splitter_type`, `window_length`, `step_length`, `horizon`

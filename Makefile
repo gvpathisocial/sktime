@@ -8,7 +8,7 @@ DOC_DIR=./docs
 BUILD_TOOLS=./build_tools
 TEST_DIR=testdir
 
-.PHONY: help release install test lint clean dist doc docs
+.PHONY: help release install test lint clean dist doc docs test_quant test_quant_core
 
 .DEFAULT_GOAL := help
 
@@ -75,6 +75,16 @@ test_mlflow: ## Run mlflow integration tests
 	python -m pytest -v --showlocals $(PYTESTOPTIONS) --pyargs sktime.utils.tests.test_mlflow_sktime_model_export
 
 tests: test
+
+test_quant: ## Run sktime_quant tests excluding integration markers
+	python -m pytest sktime_quant/tests -o addopts="" -m "not integration"
+
+test_quant_core: ## Run core quant strategy/performance tests (walkforward + risk metrics + forecast update)
+	python -m pytest \
+		sktime_quant/tests/test_walkforward.py \
+		sktime_quant/tests/test_risk_metrics.py \
+		sktime_quant/tests/test_forecast_engine_update.py \
+		-o addopts=""
 
 clean: ## Clean build dist and egg directories left after install
 	rm -rf ./dist

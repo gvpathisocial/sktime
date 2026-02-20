@@ -9,6 +9,7 @@ Quant workflow extension built on top of ``sktime``.
    :maxdepth: 1
 
    getting_started
+   architecture_and_design
    config_reference
    backtest_and_selection
    operations_runbook

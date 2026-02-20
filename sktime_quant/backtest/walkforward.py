@@ -86,9 +86,10 @@ class WalkForwardEngine:
         y_train: pd.Series,
         pred: float,
         confidence_floor: float,
+        model_context: dict[str, object] | None = None,
     ) -> tuple[float, float, str]:
         try:
-            forecaster = make_forecaster(model_name)
+            forecaster = make_forecaster(model_name, context=model_context)
             forecaster.fit(y_train, fh=[1])
             pred_int = forecaster.predict_interval(fh=[1], coverage=[confidence_floor])
             lower_cols = [
@@ -191,24 +192,73 @@ class WalkForwardEngine:
         market: pd.DataFrame,
         model_names: list[str],
         backtest_config: BacktestConfig,
+        exog: pd.DataFrame | None = None,
+        holiday_by_asset: dict[str, pd.DataFrame] | None = None,
+        progress_hook=None,
     ) -> BacktestResult:
         splitter = self._get_splitter(backtest_config)
         metrics_rows: list[dict[str, float | str | bool]] = []
         fold_rows: list[pd.DataFrame] = []
+        assets_list = sorted(market["asset"].astype(str).unique().tolist())
+        total_tasks = len(assets_list) * max(1, len(model_names))
+        task_idx = 0
 
-        for asset in sorted(market["asset"].astype(str).unique()):
+        for asset in assets_list:
             y = self._series_for_asset(market, asset)
+            if len(y) <= backtest_config.window_length + backtest_config.horizon + 2:
+                continue
+            x_asset = None
+            if exog is not None and not exog.empty:
+                xa = exog[exog["asset"].astype(str) == asset].sort_values("timestamp").copy()
+                if not xa.empty:
+                    xa = xa.set_index("timestamp")
+                    feat_cols = [c for c in xa.columns if c != "asset"]
+                    if feat_cols:
+                        x_asset = xa[feat_cols].dropna(how="any")
+                        common_idx = y.index.intersection(x_asset.index)
+                        y = y.loc[common_idx]
+                        x_asset = x_asset.loc[common_idx]
             if len(y) <= backtest_config.window_length + backtest_config.horizon + 2:
                 continue
 
             for model_name in model_names:
+                task_idx += 1
+                if progress_hook:
+                    try:
+                        progress_hook(
+                            {
+                                "stage": "backtest",
+                                "event": "model_start",
+                                "asset": asset,
+                                "model": model_name,
+                                "task_index": task_idx,
+                                "task_total": total_tasks,
+                            }
+                        )
+                    except Exception:
+                        pass
+                y_model = y
+                x_model = x_asset
+                if model_name == "prophet":
+                    if getattr(y_model.index, "tz", None) is not None:
+                        y_model = y_model.copy()
+                        y_model.index = y_model.index.tz_localize(None)
+                    if x_model is not None and getattr(x_model.index, "tz", None) is not None:
+                        x_model = x_model.copy()
+                        x_model.index = x_model.index.tz_localize(None)
+                model_context = None
+                if model_name == "prophet":
+                    holidays = (holiday_by_asset or {}).get(asset)
+                    if holidays is not None and not holidays.empty:
+                        model_context = {"holidays": holidays}
                 try:
-                    forecaster = make_forecaster(model_name)
+                    forecaster = make_forecaster(model_name, context=model_context)
                 except Exception as exc:
                     metrics_rows.append(
                         {
                             "asset": asset,
                             "model": model_name,
+                            "exog_used": False,
                             "mae": np.nan,
                             "sharpe": np.nan,
                             "sortino": np.nan,
@@ -227,15 +277,43 @@ class WalkForwardEngine:
 
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", FitFailedWarning)
-                    raw_result = evaluate(
-                        forecaster=forecaster,
-                        cv=splitter,
-                        y=y,
-                        strategy=backtest_config.strategy,
-                        scoring=MeanAbsoluteError(),
-                        return_data=True,
-                        error_score=np.nan,
+                    # Reduce statsmodels warning noise in large walk-forward runs.
+                    try:
+                        from statsmodels.tools.sm_exceptions import ConvergenceWarning, ValueWarning
+
+                        warnings.simplefilter("ignore", ConvergenceWarning)
+                        warnings.simplefilter("ignore", ValueWarning)
+                    except Exception:
+                        pass
+                    warnings.filterwarnings(
+                        "ignore",
+                        message=".*Non-stationary starting autoregressive parameters.*",
+                        category=UserWarning,
                     )
+                    exog_used = False
+                    try:
+                        raw_result = evaluate(
+                            forecaster=forecaster,
+                            cv=splitter,
+                            y=y_model,
+                            X=x_model,
+                            strategy=backtest_config.strategy,
+                            scoring=MeanAbsoluteError(),
+                            return_data=True,
+                            error_score=np.nan,
+                        )
+                        exog_used = x_model is not None
+                    except Exception:
+                        raw_result = evaluate(
+                            forecaster=forecaster,
+                            cv=splitter,
+                            y=y_model,
+                            strategy=backtest_config.strategy,
+                            scoring=MeanAbsoluteError(),
+                            return_data=True,
+                            error_score=np.nan,
+                        )
+                        exog_used = False
 
                 total_folds = len(raw_result)
                 result = raw_result.dropna(subset=["test_MeanAbsoluteError"]).copy()
@@ -248,6 +326,7 @@ class WalkForwardEngine:
                         {
                             "asset": asset,
                             "model": model_name,
+                            "exog_used": bool(x_asset is not None),
                             "mae": np.nan,
                             "sharpe": np.nan,
                             "sortino": np.nan,
@@ -284,6 +363,7 @@ class WalkForwardEngine:
                         y_train=y_train,
                         pred=pred,
                         confidence_floor=backtest_config.confidence_floor,
+                        model_context=model_context,
                     )
                     signal = self._compute_signal(
                         base=base,
@@ -342,6 +422,7 @@ class WalkForwardEngine:
                     {
                         "asset": asset,
                         "model": model_name,
+                        "exog_used": bool(exog_used),
                         "mae": float(result["test_MeanAbsoluteError"].mean()),
                         "sharpe": sharpe,
                         "sortino": sortino,
@@ -372,6 +453,20 @@ class WalkForwardEngine:
                 store["asset"] = asset
                 store["model"] = model_name
                 fold_rows.append(store)
+                if progress_hook:
+                    try:
+                        progress_hook(
+                            {
+                                "stage": "backtest",
+                                "event": "model_done",
+                                "asset": asset,
+                                "model": model_name,
+                                "task_index": task_idx,
+                                "task_total": total_tasks,
+                            }
+                        )
+                    except Exception:
+                        pass
 
         metrics = pd.DataFrame(metrics_rows)
         if metrics.empty:

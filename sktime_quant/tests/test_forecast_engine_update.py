@@ -27,6 +27,7 @@ def test_forecast_engine_persists_state_and_updates_with_delta(tmp_path):
     )
     assert not first.predictions.empty
     assert first.predictions.iloc[0]["update_status"] == "initial_fit_no_state"
+    assert "exog_used" in first.predictions.columns
 
     second = engine.forecast_assets(
         market=_market_frame(45),
@@ -38,4 +39,3 @@ def test_forecast_engine_persists_state_and_updates_with_delta(tmp_path):
     )
     assert not second.predictions.empty
     assert second.predictions.iloc[0]["update_status"] == "updated_with_delta"
-

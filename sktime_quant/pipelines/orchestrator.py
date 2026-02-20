@@ -15,6 +15,16 @@ from sktime_quant.backtest.walkforward import BacktestResult, WalkForwardEngine
 from sktime_quant.config.schema import AppConfig
 from sktime_quant.data.provider import DataProvider
 from sktime_quant.execution.orders import ORDER_COLUMNS, OrderExporter
+from sktime_quant.data.holidays import (
+    HolidayConfig,
+    build_asset_holiday_frames,
+    load_holidays_by_market,
+)
+from sktime_quant.features.exogenous import (
+    drop_exogenous_null_rows,
+    encode_categorical_exogenous,
+    lag_exogenous_one_step,
+)
 from sktime_quant.features.lagged_regressors import build_lagged_regressors
 from sktime_quant.forecast.engine import ForecastEngine, ForecastResult
 from sktime_quant.models.registry import (
@@ -289,10 +299,66 @@ class Orchestrator:
             "missing_bars_by_asset": missing_bars_by_asset,
         }
 
-    def run(self, cfg: AppConfig) -> OrchestratorResult:
+    def _load_asset_holidays(self, cfg: AppConfig, market: pd.DataFrame) -> dict[str, pd.DataFrame]:
+        if not cfg.data.enable_db_holidays:
+            return {}
+        if not cfg.data.connection_uri:
+            return {}
+        if market.empty:
+            return {}
+
+        assets = sorted(market["asset"].astype(str).unique().tolist())
+        market_map = cfg.data.asset_market_map or {}
+        markets = sorted(
+            set(
+                m
+                for m in [market_map.get(a) for a in assets]
+                if isinstance(m, str) and m.strip()
+            )
+        )
+        if cfg.data.default_market:
+            markets = sorted(set(markets + [cfg.data.default_market]))
+        if not markets:
+            return {}
+
+        start = pd.to_datetime(market["timestamp"], utc=True, errors="coerce").min()
+        end = pd.to_datetime(market["timestamp"], utc=True, errors="coerce").max()
+        if pd.isna(start) or pd.isna(end):
+            return {}
+
+        holidays_by_market = load_holidays_by_market(
+            HolidayConfig(
+                connection_uri=cfg.data.connection_uri,
+                holiday_table=cfg.data.holiday_table,
+            ),
+            markets=markets,
+            start=pd.Timestamp(start),
+            end=pd.Timestamp(end),
+        )
+        return build_asset_holiday_frames(
+            assets=assets,
+            market_by_asset=market_map,
+            holidays_by_market=holidays_by_market,
+            default_market=cfg.data.default_market,
+        )
+
+    def run(self, cfg: AppConfig, progress_hook=None) -> OrchestratorResult:
+        def notify(payload: dict[str, object]) -> None:
+            if progress_hook is None:
+                return
+            try:
+                progress_hook(payload)
+            except Exception:
+                pass
+
+        notify({"stage": "start", "event": "run_start", "run_id": cfg.run_id})
         paths = self._artifact_paths(cfg)
+        notify({"stage": "data", "event": "loading_data"})
         effective_data_cfg = self._effective_data_config(cfg, paths)
-        market, _ = self.data_provider.load_history(effective_data_cfg)
+        market, exog = self.data_provider.load_history(effective_data_cfg)
+        exog_lagged = drop_exogenous_null_rows(lag_exogenous_one_step(exog))
+        exog_model = encode_categorical_exogenous(exog_lagged)
+        holiday_by_asset = self._load_asset_holidays(cfg, market)
 
         data_quality = self._build_data_quality_report(
             market=market,
@@ -301,6 +367,14 @@ class Orchestrator:
             min_points_for_freq=cfg.execution.data_quality_min_points_for_freq,
         )
         paths["data_quality"].write_text(json.dumps(data_quality, indent=2), encoding="utf-8")
+        notify(
+            {
+                "stage": "data",
+                "event": "data_loaded",
+                "asset_count": int(market["asset"].nunique()) if not market.empty else 0,
+                "row_count": int(len(market)),
+            }
+        )
 
         if market.empty:
             empty_orders = pd.DataFrame(columns=ORDER_COLUMNS)
@@ -335,6 +409,7 @@ class Orchestrator:
                 "message": "No rows available after applying ingestion filters/incremental window.",
             }
             paths["summary"].write_text(json.dumps(summary, indent=2), encoding="utf-8")
+            notify({"stage": "complete", "event": "no_new_data"})
 
             return OrchestratorResult(
                 backtest=BacktestResult(
@@ -360,12 +435,24 @@ class Orchestrator:
         if not candidate_models:
             candidate_models = ["naive_last"]
         excluded_daily_update = get_excluded_from_daily_update(candidate_models)
+        notify(
+            {
+                "stage": "backtest",
+                "event": "backtest_start",
+                "model_count": len(candidate_models),
+                "asset_count": int(market["asset"].nunique()),
+            }
+        )
 
         backtest = self.backtest_engine.run(
             market=market,
             model_names=candidate_models,
             backtest_config=cfg.backtest,
+            exog=exog_model,
+            holiday_by_asset=holiday_by_asset,
+            progress_hook=progress_hook,
         )
+        notify({"stage": "backtest", "event": "backtest_done"})
         paths["model_selection"].write_text(
             json.dumps(backtest.selection_rationale, indent=2, default=str),
             encoding="utf-8",
@@ -379,6 +466,13 @@ class Orchestrator:
         if not model_by_asset:
             # fallback when backtest has insufficient data
             model_by_asset = {a: candidate_models[0] for a in sorted(market["asset"].unique())}
+        notify(
+            {
+                "stage": "forecast",
+                "event": "forecast_start",
+                "asset_count": len(model_by_asset),
+            }
+        )
 
         forecast = self.forecast_engine.forecast_assets(
             market=market,
@@ -387,13 +481,18 @@ class Orchestrator:
             target_confidence=cfg.risk.target_confidence,
             update_mode=cfg.model.update_mode,
             state_dir=paths["model_state_dir"],
+            exog=exog_model,
+            holiday_by_asset=holiday_by_asset,
         )
+        notify({"stage": "forecast", "event": "forecast_done", "rows": int(len(forecast.predictions))})
 
+        notify({"stage": "portfolio", "event": "portfolio_start"})
         allocation = self.portfolio_engine.rebalance(
             forecast_frame=forecast.predictions,
             risk_config=cfg.risk,
             portfolio_config=cfg.portfolio,
         )
+        notify({"stage": "portfolio", "event": "portfolio_done"})
 
         latest_prices = (
             market.sort_values("timestamp")
@@ -415,7 +514,17 @@ class Orchestrator:
             max_order_notional=cfg.execution.max_order_notional,
             max_turnover_notional_per_asset=cfg.execution.max_turnover_notional_per_asset,
         )
+        notify(
+            {
+                "stage": "orders",
+                "event": "orders_done",
+                "order_count": int(len(orders)),
+            }
+        )
 
+        # Save walkforward backtest artifacts to run-specific folder structure
+        # Metrics: contains per-asset/model performance: results/backtests/{run_id}/metrics.parquet
+        # Folds: contains per-fold trade data (cutoff, fold_return, etc): results/backtests/{run_id}/fold_predictions.parquet
         backtest.metrics.to_parquet(paths["metrics"], index=False)
         backtest.fold_predictions.to_parquet(paths["folds"], index=False)
         forecast.predictions.to_parquet(paths["forecast"], index=False)
@@ -436,12 +545,23 @@ class Orchestrator:
             "forecast_update_status_counts": forecast.predictions.get(
                 "update_status", pd.Series(dtype=str)
             ).value_counts().to_dict(),
+            "forecast_exog_used_count": int(
+                forecast.predictions.get("exog_used", pd.Series(dtype=bool)).sum()
+            ),
+            "exog_columns": (
+                [c for c in exog_model.columns if c not in {"timestamp", "asset"}]
+                if exog_model is not None
+                else []
+            ),
+            "holiday_assets_count": int(len(holiday_by_asset)),
+            "holiday_enabled": bool(cfg.data.enable_db_holidays),
             "daily_update_excluded_models": excluded_daily_update,
             "model_governance_path": str(paths["model_governance"]),
             "governance_alert_count": int(model_governance["alert_count"]),
             "run_status": "completed",
         }
         paths["summary"].write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        notify({"stage": "complete", "event": "run_completed"})
 
         return OrchestratorResult(
             backtest=backtest,

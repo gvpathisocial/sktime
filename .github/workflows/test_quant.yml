@@ -37,6 +37,14 @@ jobs:
       - name: run sktime_quant tests (without timescale integration)
         run: python -m pytest sktime_quant/tests -o addopts="" -m "not integration"
 
+      - name: run quant core strategy/performance regression tests
+        run: |
+          python -m pytest \
+            sktime_quant/tests/test_walkforward.py \
+            sktime_quant/tests/test_risk_metrics.py \
+            sktime_quant/tests/test_forecast_engine_update.py \
+            -o addopts=""
+
   quant-timescale-integration:
     runs-on: ubuntu-latest
     services:
