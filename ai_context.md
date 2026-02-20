@@ -267,11 +267,11 @@ Build a separate `sktime_quant/` extension that uses `sktime` for:
   - `results/reports/integration_batch_1.log`
   - `results/reports/integration_batch_2.log`
 
-## 20) Updated Pending TODO (Next Scope)
+## 20) Updated Pending TODO (Next Scope, Historical Checkpoint)
 1. Promote uplift UI as default entry path in docs/scripts.
 2. Add CI job for containerized Timescale integration (gated on Docker availability).
 3. Add UI smoke tests for Studio lifecycle + registry rendering.
-4. Next-level strategy scope (planned, not yet implemented):
+4. Next-level strategy scope (was planned at this checkpoint):
    - rule-chaining visual builder (UI + config serialization)
    - classifier engine (tree/RF) over indicators + internals
    - blended execution path wiring rule engine and classifier outputs
@@ -320,3 +320,19 @@ Build a separate `sktime_quant/` extension that uses `sktime` for:
 - Timescale container integration smoke:
   - `RUN_TIMESCALE_CONTAINER_TESTS=1 .\.venv\Scripts\python.exe -m pytest sktime_quant/tests/test_timescale_container_integration.py -o addopts="" -q`
   - result: `1 passed`
+
+## 23) Plan Revisit (Current Status as of 2026-02-20)
+- Completed:
+  - Freeze + re-engineering branch/tag checkpointing
+  - Requirement intake validation against `Uplift.md`
+  - Background run lifecycle runtime + registry
+  - Run-level markdown reporting
+  - Timescale container integration harness + tests
+  - Pending item 4 full implementation (rule DSL, classifier engine, blended strategy, Studio integration)
+- Pending:
+  - Promote uplift UI as default in docs/scripts
+  - Add CI wiring for containerized Timescale integration
+  - Add Studio UI smoke tests
+  - Add classifier calibration report and strategy-mode comparison artifact
+  - Add visual rule-chain form builder (beyond YAML editor)
+  - Prepare release notes and release push flow for new tags

@@ -1,5 +1,17 @@
 # sktime_quant TODO (Post Initial Release)
 
+## Plan Revisit (2026-02-20)
+- Completed in current cycle:
+  - background run lifecycle + registry (`queued/running/completed/no_new_data/failed`)
+  - run-level markdown reporting artifacts
+  - Timescale container integration harness/tests
+  - strategy engine item 4 (rule DSL + classifier + blended mode + Studio integration)
+- Pending in current cycle:
+  - uplift UI default promotion in docs/scripts
+  - CI wiring for Timescale container integration
+  - Studio UI smoke tests
+  - release notes and release/push checklist
+
 ## P0 - Reliability and Ops
 - Add docs linkcheck allowlist/denylist tuning for flaky external URLs in CI.
 - Add CLI option `--fail-on-alerts` to fail run when governance alerts exceed threshold.
