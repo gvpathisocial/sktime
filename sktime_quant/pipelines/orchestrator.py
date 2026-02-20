@@ -32,6 +32,7 @@ from sktime_quant.models.registry import (
     get_excluded_from_daily_update,
 )
 from sktime_quant.portfolio.optimizer import AllocationResult, PortfolioEngine
+from sktime_quant.reporting.run_report import write_run_report
 
 
 @dataclass(slots=True)
@@ -44,6 +45,7 @@ class OrchestratorResult:
     data_quality_path: str
     model_selection_path: str
     model_governance_path: str
+    report_path: str
     run_status: str
 
 
@@ -68,6 +70,7 @@ class Orchestrator:
             "data_quality": base / "reports" / f"{run}_data_quality.json",
             "model_selection": base / "reports" / f"{run}_model_selection.json",
             "model_governance": base / "reports" / f"{run}_model_governance.json",
+            "run_report": base / "reports" / f"{run}_report.md",
             "state": base / "state" / f"{run}_last_timestamp.txt",
             "model_state_dir": base / "state" / "models",
             "governance_history": base / "governance" / "model_stability_history.json",
@@ -408,6 +411,13 @@ class Orchestrator:
                 "run_status": "no_new_data",
                 "message": "No rows available after applying ingestion filters/incremental window.",
             }
+            summary["report_path"] = write_run_report(
+                report_path=paths["run_report"],
+                run_id=cfg.run_id,
+                summary=summary,
+                data_quality=data_quality,
+                governance=model_governance,
+            )
             paths["summary"].write_text(json.dumps(summary, indent=2), encoding="utf-8")
             notify({"stage": "complete", "event": "no_new_data"})
 
@@ -425,6 +435,7 @@ class Orchestrator:
                 data_quality_path=str(paths["data_quality"]),
                 model_selection_path=str(paths["model_selection"]),
                 model_governance_path=str(paths["model_governance"]),
+                report_path=str(paths["run_report"]),
                 run_status="no_new_data",
             )
 
@@ -560,6 +571,13 @@ class Orchestrator:
             "governance_alert_count": int(model_governance["alert_count"]),
             "run_status": "completed",
         }
+        summary["report_path"] = write_run_report(
+            report_path=paths["run_report"],
+            run_id=cfg.run_id,
+            summary=summary,
+            data_quality=data_quality,
+            governance=model_governance,
+        )
         paths["summary"].write_text(json.dumps(summary, indent=2), encoding="utf-8")
         notify({"stage": "complete", "event": "run_completed"})
 
@@ -572,6 +590,6 @@ class Orchestrator:
             data_quality_path=str(paths["data_quality"]),
             model_selection_path=str(paths["model_selection"]),
             model_governance_path=str(paths["model_governance"]),
+            report_path=str(paths["run_report"]),
             run_status="completed",
         )
-

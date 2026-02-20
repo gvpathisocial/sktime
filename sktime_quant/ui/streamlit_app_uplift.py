@@ -32,7 +32,6 @@ except ImportError:
 from sktime_quant.config.loader import load_config
 from sktime_quant.config.profiles import save_profile
 from sktime_quant.config.schema import AppConfig
-from sktime_quant.models.health import summarize_runtime_health
 from sktime_quant.models.registry import (
     get_available_model_names,
     get_excluded_from_daily_update,
@@ -40,7 +39,7 @@ from sktime_quant.models.registry import (
     get_model_overview_rows,
     get_registered_model_names,
 )
-from sktime_quant.pipelines.orchestrator import Orchestrator
+from sktime_quant.pipelines.studio_runtime import get_run, list_runs, start_background_run
 
 try:
     from sktime_quant.risk.metrics import (
@@ -103,6 +102,8 @@ def _init_state() -> None:
         st.session_state.use_history_window = False
     if "history_years" not in st.session_state:
         st.session_state.history_years = 5
+    if "active_run_id" not in st.session_state:
+        st.session_state.active_run_id = ""
 
 
 def _generate_run_id() -> str:
@@ -665,37 +666,66 @@ def _render_risk_execution_inputs(cfg: AppConfig) -> None:
     )
 
 
-def _run_pipeline(cfg: AppConfig) -> None:
+def _queue_background_run(cfg: AppConfig) -> None:
     st.session_state.last_error = None
     st.session_state.progress_events = []
-    with st.status("Running pipeline", expanded=True) as status:
-        status.write(f"run_id={cfg.run_id}")
-        status.write(f"source={_source_details(cfg)}")
-        status.write(f"profile={st.session_state.profile_path}")
+    run_id = start_background_run(cfg, st.session_state.profile_path)
+    st.session_state.active_run_id = run_id
 
-        def hook(evt: dict[str, object]) -> None:
-            st.session_state.progress_events.append(evt)
-            status.write(_fmt_event(evt))
 
-        try:
-            result = Orchestrator().run(cfg, progress_hook=hook)
-            st.session_state.result = result
-            st.session_state.run_history.append(
-                {
-                    "timestamp_utc": datetime.now(UTC).isoformat(timespec="seconds"),
-                    "run_id": cfg.run_id,
-                    "run_status": result.run_status,
-                    "source_type": cfg.data.source_type,
-                    "summary_path": result.summary_path,
-                    "orders_path": result.orders_path,
-                    "profile_path": st.session_state.profile_path,
-                }
-            )
-            status.update(label=f"Run completed: {result.run_status}", state="complete")
-        except Exception as exc:
-            st.session_state.result = None
-            st.session_state.last_error = f"{type(exc).__name__}: {exc}"
-            status.update(label="Run failed", state="error")
+def _render_background_runs(cfg: AppConfig) -> None:
+    runs = list_runs(cfg.execution.output_dir)
+    if not runs:
+        st.caption("No background runs registered yet.")
+        return
+
+    run_df = pd.DataFrame(
+        [
+            {
+                "run_id": r.get("run_id"),
+                "status": r.get("status"),
+                "updated_utc": r.get("updated_utc"),
+                "source_type": r.get("source_type"),
+                "summary_path": r.get("summary_path"),
+                "report_path": r.get("report_path"),
+                "error": r.get("error"),
+            }
+            for r in runs
+        ]
+    )
+    st.markdown("#### Background run registry")
+    _show_df(run_df, height=220)
+
+    selected = st.session_state.active_run_id or str(runs[0].get("run_id", ""))
+    selected = st.selectbox(
+        "Active run details",
+        [str(r.get("run_id")) for r in runs],
+        index=max(0, [str(r.get("run_id")) for r in runs].index(selected))
+        if selected in [str(r.get("run_id")) for r in runs]
+        else 0,
+        key="uplift_active_bg_run",
+    )
+    row = get_run(cfg.execution.output_dir, selected)
+    if not row:
+        return
+    st.session_state.active_run_id = selected
+    status = str(row.get("status", "unknown"))
+    if status in {"queued", "running"}:
+        st.info(f"Run `{selected}` is {status}. Click Refresh to poll updates.")
+    elif status == "failed":
+        st.error(f"Run `{selected}` failed: {row.get('error', '')}")
+    elif status == "completed":
+        st.success(f"Run `{selected}` completed.")
+    elif status == "no_new_data":
+        st.warning(f"Run `{selected}` completed with no new data.")
+    else:
+        st.caption(f"Run `{selected}` status: {status}")
+
+    events = row.get("events", [])
+    if isinstance(events, list) and events:
+        st.markdown("Latest events")
+        for evt in events[-20:]:
+            st.text(_fmt_event(evt))
 
 
 def _render_run_explorer(cfg: AppConfig) -> None:
@@ -716,6 +746,8 @@ def _render_run_explorer(cfg: AppConfig) -> None:
     c3.metric("Governance Alerts", int(summary.get("governance_alert_count", 0)) if str(summary.get("governance_alert_count", "")).isdigit() else str(summary.get("governance_alert_count", 0)))
     best = summary.get("best_models", {})
     c4.metric("Best Models", len(best) if isinstance(best, dict) else 0)
+    if summary.get("report_path"):
+        st.caption(f"Run report: `{summary.get('report_path')}`")
 
     if isinstance(best, dict) and best:
         st.markdown("#### Best model by asset")
@@ -1114,42 +1146,24 @@ def main() -> None:
         with st.expander("Risk + Execution", expanded=True):
             _render_risk_execution_inputs(cfg)
 
-        run_col1, run_col2 = st.columns([1, 2])
-        if run_col1.button("Run Pipeline", type="primary"):
-            _run_pipeline(cfg)
-        if run_col2.button("Generate fresh run_id"):
+        run_col1, run_col2, run_col3 = st.columns([1, 1, 1.2])
+        if run_col1.button("Queue Background Run", type="primary"):
+            _queue_background_run(cfg)
+        if run_col2.button("Refresh Run Status"):
+            st.rerun()
+        if run_col3.button("Generate fresh run_id"):
             cfg.run_id = _generate_run_id()
             st.session_state.cfg = cfg
             st.rerun()
 
         if st.session_state.last_error:
             st.error(f"Last run failed: {st.session_state.last_error}")
-        if st.session_state.progress_events:
-            with st.expander("Latest progress log", expanded=False):
-                for evt in st.session_state.progress_events[-50:]:
-                    st.text(_fmt_event(evt))
+        _render_background_runs(cfg)
 
-        result = st.session_state.result
-        if result is not None:
-            if result.run_status == "completed":
-                st.success("Run status: completed")
-            elif result.run_status == "no_new_data":
-                st.warning("Run status: no_new_data")
-            else:
-                st.error(f"Run status: {result.run_status}")
-            if not result.backtest.metrics.empty:
-                runtime_health = summarize_runtime_health(
-                    result.backtest.metrics,
-                    max_failure_rate=cfg.backtest.max_failure_rate,
-                    confidence_floor=cfg.backtest.confidence_floor,
-                )
-                if not runtime_health.empty:
-                    st.markdown("#### Runtime model health (latest run)")
-                    _show_df(runtime_health, height=220)
-
-        if st.session_state.run_history:
-            with st.expander("Session run history", expanded=False):
-                _show_df(pd.DataFrame(st.session_state.run_history), height=220)
+        runs = list_runs(cfg.execution.output_dir)
+        if runs:
+            with st.expander("Session/background run history", expanded=False):
+                _show_df(pd.DataFrame(runs), height=220)
 
     with tabs[1]:
         _render_run_explorer(cfg)

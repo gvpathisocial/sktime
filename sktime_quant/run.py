@@ -43,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"data_quality={result.data_quality_path}")
     print(f"model_selection={result.model_selection_path}")
     print(f"model_governance={result.model_governance_path}")
+    print(f"report={result.report_path}")
     print(f"orders={result.orders_path}")
 
     if args.print_summary:

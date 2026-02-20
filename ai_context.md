@@ -1,6 +1,6 @@
 # AI Context Log
 
-Last updated: 2026-02-19 (UTC)
+Last updated: 2026-02-20 (UTC)
 Workspace: `e:\Projects\Python\sktime`
 
 ## 1) Original Objective
@@ -229,3 +229,50 @@ Build a separate `sktime_quant/` extension that uses `sktime` for:
 - Latest local validation:
   - `.\.venv\Scripts\python.exe -m pytest sktime_quant/tests/test_walkforward.py sktime_quant/tests/test_risk_metrics.py sktime_quant/tests/test_forecast_engine_update.py -o addopts="" -q` -> 13 passed
   - `.\.venv\Scripts\python.exe -m pytest sktime_quant/tests -o addopts="" -m "not integration" -q` -> 57 passed, 1 deselected
+
+## 18) Re-engineering Pass (Completed 2026-02-20)
+- Freeze snapshot created before changes:
+  - branch: `freeze/20260220_101657`
+  - tag: `freeze-20260220_101657`
+  - implementation branch: `reeng/uplift-studio-bg-20260220_101657`
+- Requirement intake validation documented:
+  - `docs/quant/uplift_requirement_intake_validation.md`
+- Background-run runtime added for Studio UX:
+  - `sktime_quant/pipelines/studio_runtime.py`
+  - persisted run registry: `results/reports/run_registry.json`
+  - lifecycle states: `queued`, `running`, `completed`, `no_new_data`, `failed`
+- Run-level report artifact added:
+  - `sktime_quant/reporting/run_report.py`
+  - orchestrator now emits `*_report.md` and includes `report_path` in summary/CLI output
+- Uplift UI adjusted to foreground Studio + background execution:
+  - queue background run
+  - refresh/poll run registry
+  - run/event visibility in Run Studio
+- Timescale container integration harness added:
+  - `sktime_quant/tests/integration/timescale_container/docker-compose.yml`
+  - `sktime_quant/tests/integration/timescale_container/init.sql`
+  - test: `sktime_quant/tests/test_timescale_container_integration.py`
+
+## 19) Validation Snapshot (2026-02-20)
+- Targeted re-engineering tests:
+  - `.\.venv\Scripts\python.exe -m pytest sktime_quant/tests/test_orchestrator_integration.py sktime_quant/tests/test_cli_runner.py sktime_quant/tests/test_run_report.py sktime_quant/tests/test_studio_runtime.py -o addopts="" -q` -> 10 passed
+- Non-integration quant suite:
+  - `.\.venv\Scripts\python.exe -m pytest sktime_quant/tests -o addopts="" -m "not integration" -q` -> 60 passed, 2 deselected
+- Integration batch (Docker + Timescale):
+  - `test_timescale_integration.py` + `test_orchestrator_integration.py` -> 6 passed
+  - `test_timescale_container_integration.py` -> 1 passed
+  - combined integration batch -> 7 passed
+- Logs/report:
+  - `TEST_RESULTS.md` updated with consolidated integration section
+  - `results/reports/integration_batch_1.log`
+  - `results/reports/integration_batch_2.log`
+
+## 20) Updated Pending TODO (Next Scope)
+1. Promote uplift UI as default entry path in docs/scripts.
+2. Add CI job for containerized Timescale integration (gated on Docker availability).
+3. Add UI smoke tests for Studio lifecycle + registry rendering.
+4. Next-level strategy scope (planned, not yet implemented):
+   - rule-chaining visual builder (UI + config serialization)
+   - classifier engine (tree/RF) over indicators + internals
+   - blended execution path wiring rule engine and classifier outputs
+5. Prepare release notes + semantic milestone tag for this uplift implementation.

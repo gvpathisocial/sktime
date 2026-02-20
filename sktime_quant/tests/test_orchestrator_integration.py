@@ -1,5 +1,6 @@
 import pandas as pd
 import json
+from pathlib import Path
 
 from sktime_quant.config.schema import AppConfig
 from sktime_quant.pipelines.orchestrator import Orchestrator
@@ -36,6 +37,7 @@ def test_orchestrator_end_to_end_csv(tmp_path):
     assert result.data_quality_path.endswith(".json")
     assert result.model_selection_path.endswith(".json")
     assert result.model_governance_path.endswith(".json")
+    assert result.report_path.endswith(".md")
     assert (tmp_path / "results" / "state" / "it_run_last_timestamp.txt").exists()
     assert result.run_status == "completed"
     selection = json.loads((tmp_path / "results" / "reports" / "it_run_model_selection.json").read_text(encoding="utf-8"))
@@ -43,6 +45,8 @@ def test_orchestrator_end_to_end_csv(tmp_path):
     summary = json.loads((tmp_path / "results" / "reports" / "it_run_summary.json").read_text(encoding="utf-8"))
     assert "execution_diagnostics" in summary
     assert "dropped_reason_counts" in summary["execution_diagnostics"]
+    assert "report_path" in summary
+    assert Path(summary["report_path"]).exists()
     governance = json.loads((tmp_path / "results" / "reports" / "it_run_model_governance.json").read_text(encoding="utf-8"))
     assert "alerts" in governance
 
@@ -74,6 +78,7 @@ def test_orchestrator_handles_no_new_data_incremental_window(tmp_path):
     assert (tmp_path / "results" / "reports" / "it_no_data_summary.json").exists()
     assert result.model_selection_path.endswith(".json")
     assert result.model_governance_path.endswith(".json")
+    assert result.report_path.endswith(".md")
 
 
 def test_data_quality_reports_frequency_drift_and_missing_bars(tmp_path):

@@ -96,3 +96,30 @@ The tests have been **refactored from pure unit tests to integration tests** mat
 ---
 **Status:** Tests refactored to match project's integration testing framework - Ready for production
 
+## Consolidated Integration Batch (2026-02-20)
+
+### Scope
+- `sktime_quant/tests/test_timescale_integration.py`
+- `sktime_quant/tests/test_orchestrator_integration.py`
+- `sktime_quant/tests/test_timescale_container_integration.py`
+
+### Environment
+- Docker Desktop running
+- Timescale container via `sktime_quant/tests/integration/timescale_container/docker-compose.yml`
+- Test URI: `postgresql+psycopg://postgres:postgres@localhost:55432/postgres`
+
+### Commands
+- `docker compose -f sktime_quant/tests/integration/timescale_container/docker-compose.yml up -d --wait`
+- `RUN_TIMESCALE_TESTS=1 TIMESCALE_TEST_URI=postgresql+psycopg://postgres:postgres@localhost:55432/postgres .\.venv\Scripts\python.exe -m pytest sktime_quant/tests/test_timescale_integration.py sktime_quant/tests/test_orchestrator_integration.py -o addopts="" -q`
+- `RUN_TIMESCALE_CONTAINER_TESTS=1 .\.venv\Scripts\python.exe -m pytest sktime_quant/tests/test_timescale_container_integration.py -o addopts="" -q`
+- `docker compose -f sktime_quant/tests/integration/timescale_container/docker-compose.yml down -v`
+
+### Results
+- Batch 1: `6 passed` in `235.58s`
+- Batch 2: `1 passed` in `3.62s`
+- Combined: `7 passed`, `0 failed`, `0 skipped`
+
+### Logs
+- `results/reports/integration_batch_1.log`
+- `results/reports/integration_batch_2.log`
+
