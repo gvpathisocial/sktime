@@ -47,7 +47,7 @@ def test_classifier_predict_signal_at():
         },
         index=idx,
     )
-    sig, conf = predict_classifier_signal_at(
+    sig, conf, status = predict_classifier_signal_at(
         feature_frame=features,
         close_series=close,
         cutoff=idx[100],
@@ -57,6 +57,7 @@ def test_classifier_predict_signal_at():
     )
     assert sig in {-1, 0, 1}
     assert 0.0 <= conf <= 1.0
+    assert isinstance(status, str)
 
 
 def test_walkforward_strategy_modes_emit_signal_columns():
@@ -90,3 +91,4 @@ def test_walkforward_strategy_modes_emit_signal_columns():
     assert "signal_rule" in result.fold_predictions.columns
     assert "signal_classifier" in result.fold_predictions.columns
     assert "signal_blended" in result.fold_predictions.columns
+    assert "classifier_status" in result.fold_predictions.columns

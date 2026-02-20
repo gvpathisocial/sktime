@@ -33,7 +33,7 @@ from sktime_quant.models.registry import (
 )
 from sktime_quant.portfolio.optimizer import AllocationResult, PortfolioEngine
 from sktime_quant.reporting.run_report import write_run_report
-from sktime_quant.strategy.rule_dsl import save_rules_yaml
+from sktime_quant.strategy.rule_dsl import load_rules_yaml, save_rules_yaml
 
 
 @dataclass(slots=True)
@@ -210,6 +210,24 @@ class Orchestrator:
             return cfg.data
         return replace(cfg.data, start=prev_ts)
 
+    def _resolve_effective_strategy_config(self, cfg: AppConfig) -> tuple[object, list[dict[str, object]], str]:
+        rules_source = "inline"
+        effective_rules = list(cfg.strategy.rules or [])
+        if cfg.strategy.rules_path:
+            if not Path(cfg.strategy.rules_path).exists():
+                raise ValueError(
+                    f"Failed to load strategy rules from path '{cfg.strategy.rules_path}': FileNotFoundError: file does not exist"
+                )
+            try:
+                effective_rules = load_rules_yaml(cfg.strategy.rules_path)
+                rules_source = f"path:{cfg.strategy.rules_path}"
+            except Exception as exc:
+                raise ValueError(
+                    f"Failed to load strategy rules from path '{cfg.strategy.rules_path}': {type(exc).__name__}: {exc}"
+                ) from exc
+        strategy_cfg = replace(cfg.strategy, rules=effective_rules)
+        return strategy_cfg, effective_rules, rules_source
+
     def _write_incremental_state(self, cfg: AppConfig, paths: dict[str, Path], market: pd.DataFrame) -> None:
         if not cfg.data.incremental_mode or market.empty:
             return
@@ -359,6 +377,7 @@ class Orchestrator:
 
         notify({"stage": "start", "event": "run_start", "run_id": cfg.run_id})
         paths = self._artifact_paths(cfg)
+        strategy_cfg, effective_rules, strategy_rules_source = self._resolve_effective_strategy_config(cfg)
         notify({"stage": "data", "event": "loading_data"})
         effective_data_cfg = self._effective_data_config(cfg, paths)
         market, exog = self.data_provider.load_history(effective_data_cfg)
@@ -373,15 +392,13 @@ class Orchestrator:
             min_points_for_freq=cfg.execution.data_quality_min_points_for_freq,
         )
         paths["data_quality"].write_text(json.dumps(data_quality, indent=2), encoding="utf-8")
-        strategy_payload = asdict(cfg.strategy)
+        strategy_payload = asdict(strategy_cfg)
+        strategy_payload["rules_source"] = strategy_rules_source
         paths["strategy_config"].write_text(
             json.dumps(strategy_payload, indent=2, default=str),
             encoding="utf-8",
         )
-        try:
-            save_rules_yaml(paths["strategy_rules"], cfg.strategy.rules)
-        except Exception:
-            pass
+        save_rules_yaml(paths["strategy_rules"], effective_rules)
         notify(
             {
                 "stage": "data",
@@ -418,11 +435,12 @@ class Orchestrator:
                 "model_governance_path": str(paths["model_governance"]),
                 "strategy_config_path": str(paths["strategy_config"]),
                 "strategy_rules_path": str(paths["strategy_rules"]),
+                "strategy_rules_source": strategy_rules_source,
                 "timestamp_utc": datetime.now(UTC).isoformat(),
                 "allocation_diagnostics": {},
                 "execution_diagnostics": self.order_exporter._empty_diagnostics(),
                 "governance_alert_count": 0,
-                "strategy_mode": cfg.strategy.mode,
+                "strategy_mode": strategy_cfg.mode,
                 "run_status": "no_new_data",
                 "message": "No rows available after applying ingestion filters/incremental window.",
             }
@@ -475,7 +493,7 @@ class Orchestrator:
             model_names=candidate_models,
             backtest_config=cfg.backtest,
             exog=exog_model,
-            strategy_config=cfg.strategy,
+            strategy_config=strategy_cfg,
             holiday_by_asset=holiday_by_asset,
             progress_hook=progress_hook,
         )
@@ -570,8 +588,9 @@ class Orchestrator:
             "execution_diagnostics": order_diagnostics,
             "strategy_config_path": str(paths["strategy_config"]),
             "strategy_rules_path": str(paths["strategy_rules"]),
-            "strategy_mode": cfg.strategy.mode,
-            "strategy_blend_policy": cfg.strategy.blend_policy,
+            "strategy_rules_source": strategy_rules_source,
+            "strategy_mode": strategy_cfg.mode,
+            "strategy_blend_policy": strategy_cfg.blend_policy,
             "forecast_update_mode": cfg.model.update_mode,
             "forecast_update_status_counts": forecast.predictions.get(
                 "update_status", pd.Series(dtype=str)

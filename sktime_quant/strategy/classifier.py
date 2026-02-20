@@ -39,21 +39,21 @@ def predict_classifier_signal_at(
     classifier_type: str = "random_forest",
     min_train_samples: int = 30,
     probability_threshold: float = 0.55,
-) -> tuple[int, float]:
+) -> tuple[int, float, str]:
     if feature_frame is None or feature_frame.empty or close_series is None or close_series.empty:
-        return 0, 0.0
+        return 0, 0.0, "no_features_or_close"
 
     frame = feature_frame.copy()
     if not isinstance(frame.index, pd.DatetimeIndex):
-        return 0, 0.0
+        return 0, 0.0, "invalid_feature_index"
     frame = frame.sort_index()
     close = close_series.copy().sort_index()
     if not isinstance(close.index, pd.DatetimeIndex):
-        return 0, 0.0
+        return 0, 0.0, "invalid_close_index"
 
     common = frame.index.intersection(close.index)
     if len(common) < max(5, int(min_train_samples)):
-        return 0, 0.0
+        return 0, 0.0, "insufficient_common_samples"
 
     frame = frame.loc[common]
     y_cls = _build_label_from_close(close.loc[common])
@@ -61,7 +61,7 @@ def predict_classifier_signal_at(
     data["target"] = y_cls
     data = data.dropna(how="any")
     if data.empty:
-        return 0, 0.0
+        return 0, 0.0, "empty_after_dropna"
 
     cutoff = pd.Timestamp(cutoff)
     train = data[data.index < cutoff]
@@ -69,16 +69,16 @@ def predict_classifier_signal_at(
     if test.empty:
         prior = data[data.index <= cutoff]
         if prior.empty:
-            return 0, 0.0
+            return 0, 0.0, "no_test_row"
         test = prior.tail(1)
         train = data[data.index < test.index[0]]
 
     if len(train) < max(5, int(min_train_samples)):
-        return 0, 0.0
+        return 0, 0.0, "insufficient_train_samples"
 
     x_cols = [c for c in train.columns if c != "target"]
     if not x_cols:
-        return 0, 0.0
+        return 0, 0.0, "no_feature_columns"
 
     x_train = train[x_cols]
     y_train = train["target"].astype(int)
@@ -86,7 +86,7 @@ def predict_classifier_signal_at(
 
     model = _make_classifier(classifier_type)
     if model is None:
-        return 0, 0.0
+        return 0, 0.0, "sklearn_missing"
     try:
         model.fit(x_train, y_train)
         pred = int(model.predict(x_test)[0])
@@ -98,7 +98,7 @@ def predict_classifier_signal_at(
         else:
             conf = 0.5
         if conf < float(probability_threshold):
-            return 0, conf
-        return pred if pred in {-1, 0, 1} else 0, conf
+            return 0, conf, "low_confidence"
+        return (pred if pred in {-1, 0, 1} else 0), conf, "ok"
     except Exception:
-        return 0, 0.0
+        return 0, 0.0, "classifier_error"

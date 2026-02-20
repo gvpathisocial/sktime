@@ -18,7 +18,7 @@ from sktime_quant.models.registry import make_forecaster
 from sktime_quant.risk.metrics import max_drawdown
 from sktime_quant.strategy.blender import blend_signals
 from sktime_quant.strategy.classifier import predict_classifier_signal_at
-from sktime_quant.strategy.rule_dsl import evaluate_rules_signal, load_rules_yaml
+from sktime_quant.strategy.rule_dsl import evaluate_rules_signal
 
 
 @dataclass(slots=True)
@@ -251,12 +251,6 @@ class WalkForwardEngine:
         assets_list = sorted(market["asset"].astype(str).unique().tolist())
         strategy_mode = str(getattr(strategy_config, "mode", "forecast_only"))
         strategy_rules = list(getattr(strategy_config, "rules", []) or [])
-        strategy_rules_path = getattr(strategy_config, "rules_path", None)
-        if strategy_rules_path:
-            try:
-                strategy_rules = load_rules_yaml(strategy_rules_path)
-            except Exception:
-                pass
         rule_chain = str(getattr(strategy_config, "rule_chain", "any"))
         classifier_type = str(getattr(strategy_config, "classifier_type", "random_forest"))
         classifier_min_train = int(
@@ -281,6 +275,7 @@ class WalkForwardEngine:
                 .set_index("timestamp")["close"]
                 .astype(float)
             )
+            classifier_cache: dict[tuple[str, str, str, int, float], tuple[int, float, str]] = {}
             y = self._series_for_asset(market, asset)
             if len(y) <= backtest_config.window_length + backtest_config.horizon + 2:
                 continue
@@ -436,6 +431,7 @@ class WalkForwardEngine:
                 signals_classifier: list[int] = []
                 signals_blended: list[int] = []
                 classifier_confidence_vals: list[float] = []
+                classifier_status_vals: list[str] = []
                 interval_sources: list[str] = []
 
                 for _, row in result.iterrows():
@@ -468,14 +464,25 @@ class WalkForwardEngine:
                         chain=rule_chain,
                         default_signal=0,
                     )
-                    classifier_signal, cls_conf = predict_classifier_signal_at(
-                        feature_frame=strategy_feature_frame,
-                        close_series=strategy_close,
-                        cutoff=cutoff,
-                        classifier_type=classifier_type,
-                        min_train_samples=classifier_min_train,
-                        probability_threshold=classifier_prob_threshold,
+                    cache_key = (
+                        str(asset),
+                        pd.Timestamp(cutoff).isoformat(),
+                        classifier_type,
+                        classifier_min_train,
+                        round(classifier_prob_threshold, 4),
                     )
+                    cached = classifier_cache.get(cache_key)
+                    if cached is None:
+                        cached = predict_classifier_signal_at(
+                            feature_frame=strategy_feature_frame,
+                            close_series=strategy_close,
+                            cutoff=cutoff,
+                            classifier_type=classifier_type,
+                            min_train_samples=classifier_min_train,
+                            probability_threshold=classifier_prob_threshold,
+                        )
+                        classifier_cache[cache_key] = cached
+                    classifier_signal, cls_conf, cls_status = cached
                     blended_signal = blend_signals(
                         forecast_signal=signal,
                         rule_signal=rule_signal,
@@ -512,6 +519,7 @@ class WalkForwardEngine:
                     signals_classifier.append(classifier_signal)
                     signals_blended.append(blended_signal)
                     classifier_confidence_vals.append(cls_conf)
+                    classifier_status_vals.append(cls_status)
                     interval_sources.append(interval_source)
 
                 result["fold_return"] = fold_returns
@@ -524,6 +532,7 @@ class WalkForwardEngine:
                 result["signal_classifier"] = signals_classifier
                 result["signal_blended"] = signals_blended
                 result["classifier_confidence"] = classifier_confidence_vals
+                result["classifier_status"] = classifier_status_vals
                 result["interval_source"] = interval_sources
 
                 returns = result["fold_return"].fillna(0.0)
@@ -543,12 +552,17 @@ class WalkForwardEngine:
 
                 excluded = False
                 exclusion_reason = ""
+                classifier_status_series = result["classifier_status"].astype(str)
+                classifier_missing = bool((classifier_status_series == "sklearn_missing").any())
                 if failure_rate > backtest_config.max_failure_rate:
                     excluded = True
                     exclusion_reason = "high_failure_rate"
                 elif empirical_coverage < backtest_config.confidence_floor:
                     excluded = True
                     exclusion_reason = "low_empirical_coverage"
+                elif strategy_mode in {"classifier_only", "blended"} and classifier_missing:
+                    excluded = True
+                    exclusion_reason = "classifier_unavailable"
 
                 metrics_rows.append(
                     {
@@ -570,6 +584,8 @@ class WalkForwardEngine:
                         "strategy_mode": strategy_mode,
                         "blend_policy": blend_policy,
                         "classifier_type": classifier_type,
+                        "classifier_unavailable": classifier_missing,
+                        "classifier_status_counts": classifier_status_series.value_counts().to_dict(),
                     }
                 )
 
@@ -587,6 +603,7 @@ class WalkForwardEngine:
                         "signal_classifier",
                         "signal_blended",
                         "classifier_confidence",
+                        "classifier_status",
                         "interval_source",
                     ]
                 ].copy()

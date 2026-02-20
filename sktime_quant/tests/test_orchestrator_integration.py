@@ -1,6 +1,7 @@
 import pandas as pd
 import json
 from pathlib import Path
+import pytest
 
 from sktime_quant.config.schema import AppConfig
 from sktime_quant.pipelines.orchestrator import Orchestrator
@@ -50,6 +51,7 @@ def test_orchestrator_end_to_end_csv(tmp_path):
     assert "strategy_mode" in summary
     assert "strategy_config_path" in summary
     assert "strategy_rules_path" in summary
+    assert "strategy_rules_source" in summary
     governance = json.loads((tmp_path / "results" / "reports" / "it_run_model_governance.json").read_text(encoding="utf-8"))
     assert "alerts" in governance
 
@@ -82,6 +84,29 @@ def test_orchestrator_handles_no_new_data_incremental_window(tmp_path):
     assert result.model_selection_path.endswith(".json")
     assert result.model_governance_path.endswith(".json")
     assert result.report_path.endswith(".md")
+
+
+def test_orchestrator_raises_on_invalid_rules_path(tmp_path):
+    n = 80
+    df = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2023-01-01", periods=n, freq="D"),
+            "asset": ["A"] * n,
+            "close": [100 + i * 0.1 for i in range(n)],
+        }
+    )
+    csv_path = tmp_path / "market.csv"
+    df.to_csv(csv_path, index=False)
+
+    cfg = AppConfig()
+    cfg.run_id = "it_bad_rules"
+    cfg.data.source_type = "csv"
+    cfg.data.csv_path = str(csv_path)
+    cfg.execution.output_dir = str(tmp_path / "results")
+    cfg.strategy.rules_path = str(tmp_path / "missing_rules.yaml")
+
+    with pytest.raises(ValueError, match="Failed to load strategy rules"):
+        Orchestrator().run(cfg)
 
 
 def test_data_quality_reports_frequency_drift_and_missing_bars(tmp_path):
